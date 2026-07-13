@@ -4,19 +4,26 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Fullscreen
@@ -28,10 +35,11 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -42,16 +50,25 @@ import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 private enum class ResponseTab(val label: String) {
@@ -66,28 +83,33 @@ private enum class ResponseTab(val label: String) {
 fun ResponseWorkspace(
     response: ApiResponseResult?,
     isSending: Boolean,
-    motionSettings: MotionSettings,
     modifier: Modifier = Modifier
 ) {
     var selectedTab by remember(response?.body) { mutableStateOf(ResponseTab.PRETTY) }
     var searchVisible by remember(response?.body) { mutableStateOf(false) }
-    var query by remember(response?.body) { mutableStateOf("") }
+    val searchState = remember(response?.body) { ResponseSearchState() }
     var fullscreen by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
 
     Column(modifier = modifier.fillMaxSize()) {
         ResponseToolbar(
             response = response,
-            onSearch = { searchVisible = !searchVisible },
+            onSearch = {
+                searchVisible = !searchVisible
+                if (!searchVisible) searchState.clear()
+            },
             onCopy = { response?.let { clipboard.setText(AnnotatedString(it.body)) } },
-            onFullscreen = { fullscreen = true }
+            onFullscreen = {
+                searchVisible = true
+                fullscreen = true
+            }
         )
 
         AnimatedContent(
             targetState = response,
             transitionSpec = {
-                fadeIn(animationSpec = motionSettings.springSpec()) togetherWith
-                    fadeOut(animationSpec = motionSettings.springSpec())
+                fadeIn(animationSpec = defaultSpringSpec()) togetherWith
+                    fadeOut(animationSpec = defaultSpringSpec())
             },
             label = "response-content",
             modifier = Modifier.fillMaxSize()
@@ -100,8 +122,11 @@ fun ResponseWorkspace(
                     selectedTab = selectedTab,
                     onTabSelected = { selectedTab = it },
                     searchVisible = searchVisible,
-                    query = query,
-                    onQueryChange = { query = it },
+                    searchState = searchState,
+                    onCloseSearch = {
+                        searchVisible = false
+                        searchState.clear()
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -133,9 +158,12 @@ fun ResponseWorkspace(
                         response = response,
                         selectedTab = selectedTab,
                         onTabSelected = { selectedTab = it },
-                        searchVisible = true,
-                        query = query,
-                        onQueryChange = { query = it },
+                        searchVisible = searchVisible,
+                        searchState = searchState,
+                        onCloseSearch = {
+                            searchVisible = false
+                            searchState.clear()
+                        },
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -185,8 +213,8 @@ private fun ResponseContent(
     selectedTab: ResponseTab,
     onTabSelected: (ResponseTab) -> Unit,
     searchVisible: Boolean,
-    query: String,
-    onQueryChange: (String) -> Unit,
+    searchState: ResponseSearchState,
+    onCloseSearch: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val parsedBody by produceState(
@@ -203,20 +231,20 @@ private fun ResponseContent(
     }
     val parsed = parsedBody.value
     val prettyText = parsedBody.prettyText
+    val searchable = selectedTab == ResponseTab.PRETTY || selectedTab == ResponseTab.RAW
+    val searchableText = if (selectedTab == ResponseTab.RAW) response.body else prettyText
+    ResponseSearchEngine(
+        text = searchableText,
+        enabled = searchable && searchVisible,
+        state = searchState
+    )
 
     Column(modifier = modifier) {
         ResponseTabs(selectedTab, onTabSelected)
-        if (searchVisible && selectedTab in setOf(ResponseTab.PRETTY, ResponseTab.RAW)) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = onQueryChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                placeholder = { Text("搜索") },
-                leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-                singleLine = true,
-                textStyle = MaterialTheme.typography.bodyMedium
+        if (searchVisible && searchable) {
+            CompactSearchBar(
+                state = searchState,
+                onClose = onCloseSearch
             )
         }
 
@@ -224,7 +252,7 @@ private fun ResponseContent(
             ResponseTab.PRETTY -> CodeReader(
                 text = prettyText,
                 highlight = parsed != null,
-                query = query,
+                searchState = searchState,
                 modifier = Modifier.weight(1f)
             )
             ResponseTab.TREE -> if (parsed != null) {
@@ -235,13 +263,12 @@ private fun ResponseContent(
             ResponseTab.RAW -> CodeReader(
                 text = response.body,
                 highlight = false,
-                query = query,
+                searchState = searchState,
                 modifier = Modifier.weight(1f)
             )
             ResponseTab.HEADERS -> CodeReader(
                 text = response.headers.joinToString("\n") { "${it.key}: ${it.value}" },
                 highlight = false,
-                query = "",
                 modifier = Modifier.weight(1f)
             )
             ResponseTab.COOKIES -> CodeReader(
@@ -249,9 +276,119 @@ private fun ResponseContent(
                     .filter { it.key.equals("Set-Cookie", true) }
                     .joinToString("\n") { it.value },
                 highlight = false,
-                query = "",
                 modifier = Modifier.weight(1f)
             )
+        }
+    }
+}
+
+@Composable
+private fun ResponseSearchEngine(
+    text: String,
+    enabled: Boolean,
+    state: ResponseSearchState
+) {
+    val query = state.query
+    LaunchedEffect(text, enabled, query) {
+        if (!enabled || query.isBlank()) {
+            state.updateResults(IntArray(0))
+            return@LaunchedEffect
+        }
+        state.isSearching = true
+        delay(SearchDebounceMs)
+        val matches = withContext(Dispatchers.Default) {
+            findMatchStarts(text, query)
+        }
+        state.updateResults(matches, query)
+    }
+}
+
+@Composable
+private fun CompactSearchBar(
+    state: ResponseSearchState,
+    onClose: () -> Unit
+) {
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+        keyboardController?.show()
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            modifier = Modifier
+                .weight(1f)
+                .height(40.dp),
+            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        ) {
+            BasicTextField(
+                value = state.query,
+                onValueChange = { state.query = it },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(focusRequester),
+                decorationBox = { innerTextField ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Outlined.Search,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Box(modifier = Modifier.padding(start = 8.dp).weight(1f)) {
+                            if (state.query.isEmpty()) {
+                                Text(
+                                    "搜索响应",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            innerTextField()
+                        }
+                    }
+                }
+            )
+        }
+        Text(
+            text = when {
+                state.isSearching -> "..."
+                state.matches.isEmpty() -> "0/0"
+                else -> "${state.currentIndex + 1}/${state.matches.size}"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .widthIn(min = 38.dp)
+                .padding(start = 6.dp)
+        )
+        IconButton(onClick = state::previous, enabled = state.matches.isNotEmpty(), modifier = Modifier.size(32.dp)) {
+            Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = "上一个结果", modifier = Modifier.size(20.dp))
+        }
+        IconButton(onClick = state::next, enabled = state.matches.isNotEmpty(), modifier = Modifier.size(32.dp)) {
+            Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "下一个结果", modifier = Modifier.size(20.dp))
+        }
+        IconButton(
+            onClick = {
+                keyboardController?.hide()
+                onClose()
+            },
+            modifier = Modifier.size(32.dp)
+        ) {
+            Icon(Icons.Outlined.Close, contentDescription = "关闭搜索", modifier = Modifier.size(18.dp))
         }
     }
 }
@@ -330,50 +467,93 @@ private fun ResponseTabs(selected: ResponseTab, onSelected: (ResponseTab) -> Uni
 private fun CodeReader(
     text: String,
     highlight: Boolean,
-    query: String,
+    searchState: ResponseSearchState? = null,
     modifier: Modifier = Modifier
 ) {
-    val content by produceState(
+    val baseContent by produceState(
         initialValue = AnnotatedString(text),
         key1 = text,
-        key2 = highlight,
-        key3 = query
+        key2 = highlight
     ) {
         value = withContext(Dispatchers.Default) {
-            val base = if (highlight) highlightJson(text) else AnnotatedString(text)
-            if (query.isBlank()) base else highlightMatches(base, query)
+            if (highlight) highlightJson(text) else AnnotatedString(text)
         }
+    }
+    val horizontalScroll = rememberScrollState()
+    val verticalScroll = rememberScrollState()
+    var layoutResult by remember(text) { mutableStateOf<TextLayoutResult?>(null) }
+    val density = LocalDensity.current
+    val currentStart = searchState?.matches?.getOrNull(searchState.currentIndex)
+    val currentQuery = searchState?.resultQuery.orEmpty()
+    val currentBounds = remember(layoutResult, currentStart, currentQuery) {
+        val layout = layoutResult
+        if (layout == null || currentStart == null || currentQuery.isEmpty()) {
+            null
+        } else {
+            val startBox = layout.getBoundingBox(currentStart)
+            val endOffset = (currentStart + currentQuery.length - 1).coerceAtMost(text.lastIndex)
+            val endBox = layout.getBoundingBox(endOffset)
+            if (endBox.top == startBox.top) {
+                androidx.compose.ui.geometry.Rect(startBox.left, startBox.top, endBox.right, startBox.bottom)
+            } else {
+                startBox
+            }
+        }
+    }
+
+    LaunchedEffect(currentStart, layoutResult) {
+        val start = currentStart ?: return@LaunchedEffect
+        val layout = layoutResult ?: return@LaunchedEffect
+        val box = layout.getBoundingBox(start)
+        val margin = with(density) { 20.dp.roundToPx() }
+        horizontalScroll.scrollTo((box.left.toInt() - margin).coerceIn(0, horizontalScroll.maxValue))
+        verticalScroll.scrollTo((box.top.toInt() - margin).coerceIn(0, verticalScroll.maxValue))
     }
     Surface(modifier = modifier.fillMaxSize(), color = Color(0xFF15171A)) {
         SelectionContainer {
             Text(
-                text = content,
+                text = baseContent,
                 color = Color(0xFFE5E7EB),
                 fontFamily = FontFamily.Monospace,
                 style = MaterialTheme.typography.bodySmall,
                 lineHeight = 20.sp,
+                onTextLayout = { layoutResult = it },
                 modifier = Modifier
                     .fillMaxSize()
-                    .horizontalScroll(rememberScrollState())
-                    .verticalScroll(rememberScrollState())
+                    .horizontalScroll(horizontalScroll)
+                    .verticalScroll(verticalScroll)
                     .padding(12.dp)
+                    .drawWithContent {
+                        drawContent()
+                        currentBounds?.let { bounds ->
+                            drawRect(
+                                color = Color(0x66F97316),
+                                topLeft = bounds.topLeft,
+                                size = bounds.size
+                            )
+                            drawRect(
+                                color = Color(0xFFF97316),
+                                topLeft = bounds.topLeft,
+                                size = bounds.size,
+                                style = Stroke(width = 2f)
+                            )
+                        }
+                    }
             )
         }
     }
 }
 
-private fun highlightMatches(base: AnnotatedString, query: String): AnnotatedString {
-    val builder = AnnotatedString.Builder(base)
-    var start = base.text.indexOf(query, ignoreCase = true)
-    while (start >= 0) {
-        builder.addStyle(
-            SpanStyle(background = Color(0xFFFDE047), color = Color(0xFF111827)),
-            start,
-            start + query.length
-        )
-        start = base.text.indexOf(query, start + query.length, ignoreCase = true)
-    }
-    return builder.toAnnotatedString()
+private suspend fun findMatchStarts(text: String, query: String): IntArray {
+    if (query.isBlank()) return IntArray(0)
+    return buildList<Int> {
+        var start = text.indexOf(query, ignoreCase = true)
+        while (start >= 0) {
+            if ((size and 255) == 0) currentCoroutineContext().ensureActive()
+            add(start)
+            start = text.indexOf(query, start + query.length, ignoreCase = true)
+        }
+    }.toIntArray()
 }
 
 @Composable
@@ -508,6 +688,42 @@ private data class ParsedBody(
     val value: JsonValue?,
     val prettyText: String
 )
+
+@Stable
+private class ResponseSearchState {
+    var query by mutableStateOf("")
+    var matches by mutableStateOf(IntArray(0))
+        private set
+    var resultQuery by mutableStateOf("")
+        private set
+    var currentIndex by mutableStateOf(-1)
+        private set
+    var isSearching by mutableStateOf(false)
+
+    fun updateResults(newMatches: IntArray, matchedQuery: String = query) {
+        matches = newMatches
+        resultQuery = matchedQuery
+        currentIndex = if (newMatches.isEmpty()) -1 else 0
+        isSearching = false
+    }
+
+    fun previous() {
+        if (matches.isEmpty()) return
+        currentIndex = if (currentIndex <= 0) matches.lastIndex else currentIndex - 1
+    }
+
+    fun next() {
+        if (matches.isEmpty()) return
+        currentIndex = if (currentIndex >= matches.lastIndex) 0 else currentIndex + 1
+    }
+
+    fun clear() {
+        query = ""
+        updateResults(IntArray(0), "")
+    }
+}
+
+private const val SearchDebounceMs = 120L
 
 private fun statusReason(code: Int): String = when (code) {
     200 -> "OK"

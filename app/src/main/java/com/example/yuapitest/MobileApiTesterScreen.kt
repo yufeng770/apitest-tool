@@ -1,10 +1,5 @@
 package com.example.yuapitest
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,7 +21,6 @@ import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -54,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -62,7 +57,7 @@ import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.launch
 
-private enum class MainDestination { REQUEST, HISTORY, SETTINGS }
+private enum class MainDestination { REQUEST, HISTORY }
 
 enum class RequestEditorTab(val label: String) {
     AUTH("Auth"),
@@ -75,7 +70,6 @@ enum class RequestEditorTab(val label: String) {
 fun MobileApiTesterScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val historyRepository = remember { RequestHistoryRepository(context) }
-    val motionRepository = remember { MotionSettingsRepository(context) }
     val apiClient = remember { ApiHttpClient() }
     val scope = rememberCoroutineScope()
 
@@ -85,7 +79,6 @@ fun MobileApiTesterScreen(modifier: Modifier = Modifier) {
     var history by remember { mutableStateOf(historyRepository.load()) }
     var isSending by remember { mutableStateOf(false) }
     var selectedEditor by remember { mutableStateOf<RequestEditorTab?>(null) }
-    var motionSettings by remember { mutableStateOf(motionRepository.load()) }
 
     fun sendRequest() {
         if (isSending) return
@@ -125,12 +118,6 @@ fun MobileApiTesterScreen(modifier: Modifier = Modifier) {
                     icon = Icons.Outlined.History,
                     contentDescription = "History"
                 )
-                CompactNavigationItem(
-                    selected = destination == MainDestination.SETTINGS,
-                    onClick = { destination = MainDestination.SETTINGS },
-                    icon = Icons.Outlined.Settings,
-                    contentDescription = "Settings"
-                )
             }
         }
     ) { innerPadding ->
@@ -146,7 +133,6 @@ fun MobileApiTesterScreen(modifier: Modifier = Modifier) {
                     response = response,
                     isSending = isSending,
                     selectedEditor = selectedEditor,
-                    motionSettings = motionSettings,
                     onDraftChange = { draft = it },
                     onEditorSelected = { tab ->
                         selectedEditor = if (selectedEditor == tab) null else tab
@@ -171,12 +157,6 @@ fun MobileApiTesterScreen(modifier: Modifier = Modifier) {
                         history = emptyList()
                     }
                 )
-
-                MainDestination.SETTINGS -> SettingsScreen(
-                    settings = motionSettings,
-                    onSettingsChange = { motionSettings = it.normalized() },
-                    onSettingsSettled = { motionRepository.save(it) }
-                )
             }
         }
     }
@@ -188,7 +168,6 @@ private fun RequestWorkspace(
     response: ApiResponseResult?,
     isSending: Boolean,
     selectedEditor: RequestEditorTab?,
-    motionSettings: MotionSettings,
     onDraftChange: (ApiRequestDraft) -> Unit,
     onEditorSelected: (RequestEditorTab) -> Unit,
     onClear: () -> Unit,
@@ -211,29 +190,28 @@ private fun RequestWorkspace(
             onSelected = onEditorSelected
         )
 
-        AnimatedVisibility(
-            visible = selectedEditor != null,
-            enter = expandVertically(animationSpec = motionSettings.springSpec()) +
-                fadeIn(animationSpec = motionSettings.springSpec()),
-            exit = shrinkVertically(animationSpec = motionSettings.springSpec()) +
-                fadeOut(animationSpec = motionSettings.springSpec())
-        ) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Box(modifier = Modifier.weight(1f)) {
+            ResponseWorkspace(
+                response = response,
+                isSending = isSending,
+                modifier = Modifier.fillMaxSize()
+            )
             selectedEditor?.let { editor ->
-                RequestEditorPanel(
-                    tab = editor,
-                    draft = draft,
-                    onDraftChange = onDraftChange
-                )
+                Box(
+                    modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .zIndex(1f)
+                ) {
+                    RequestEditorPanel(
+                        tab = editor,
+                        draft = draft,
+                        onDraftChange = onDraftChange
+                    )
+                }
             }
         }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        ResponseWorkspace(
-            response = response,
-            isSending = isSending,
-            motionSettings = motionSettings,
-            modifier = Modifier.weight(1f)
-        )
     }
 }
 
